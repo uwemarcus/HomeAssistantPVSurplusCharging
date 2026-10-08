@@ -1,4 +1,4 @@
-  PV-Laderegelung anhand der SoC-Entwicklung der BYD-Batterie.
+  PV-Laderegelung anhand der SoC-Entwicklung der BYD-Batterie:
   
   PV-Anlage mit 6,5 kWp
   
