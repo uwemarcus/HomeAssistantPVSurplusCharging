@@ -1,0 +1,601 @@
+alias: Wallbox PV-Ueberschussladen
+description: >-
+  PV-Laderegelung anhand der SoC-Entwicklung der BYD-Batterie.
+
+  Batteriekapazitaet: 9800 Wh. 1 Prozentpunkt SoC entspricht 98 Wh.
+
+  Regeln: - Regelung alle 10 Minuten - Einschalten nur bei SoC > 80 % -
+  Einschalten nur zwischen 07:00 und vor 17:00 - um 17:00 zwingend Sollstrom 6 A
+  und Ladefreigabe AUS - laufende Ladung darf unter 80 % weiterlaufen - SoC < 60
+  %: Sollstrom 6 A und Ladefreigabe AUS - SoC > 98 %: 16 A - SoC-Trend innerhalb
+  +/-0,2 Prozentpunkten: keine Stromaenderung - ausserhalb der Totzone:
+  energetisch berechnete Stromkorrektur - Ladestrom 6 bis 16 A -
+  PV-Ueberschussladen AUS: 6 A und Ladefreigabe AUS - Fahrzeugstatusaenderungen
+  beeinflussen die Ladefreigabe nicht - STOP-SOC wird nur protokolliert, wenn
+  wirklich abgeschaltet wird
+triggers:
+  - trigger: time_pattern
+    minutes: /10
+    seconds: '0'
+    id: regelung
+  - trigger: time
+    at: '17:00:00'
+    id: tagesende
+  - trigger: state
+    entity_id: input_boolean.pv_uberschussladen
+    from: 'off'
+    to: 'on'
+    id: aktiviert
+  - trigger: state
+    entity_id: input_boolean.pv_uberschussladen
+    from: 'on'
+    to: 'off'
+    id: deaktiviert
+  - trigger: homeassistant
+    event: start
+    id: initialisieren
+  - trigger: state
+    entity_id: sensor.go_echarger_status_text
+    id: fahrzeugstatus
+conditions: []
+actions:
+  - if:
+      - condition: trigger
+        id: deaktiviert
+    then:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.wallbox_ladestrom_vorgabe
+        data:
+          value: 6
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.wallbox_ladefreigabe
+      - action: logbook.log
+        data:
+          name: Wallbox PV-Regelung
+          message: PV-UEBERSCHUSSLADEN AUS | Sollstrom -> 6 A | Ladefreigabe -> AUS
+          entity_id: input_boolean.pv_uberschussladen
+          domain: automation
+      - stop: >-
+          PV-Ueberschussladen deaktiviert. Wallbox auf 6 A gesetzt und
+          Ladefreigabe ausgeschaltet.
+  - condition: state
+    entity_id: input_boolean.pv_uberschussladen
+    state: 'on'
+  - variables:
+      soc_gueltig: |-
+        {{
+          has_value('sensor.byd_battery_box_premium_hv_ladezustand')
+        }}
+      soc_aktuell: |-
+        {{
+          states('sensor.byd_battery_box_premium_hv_ladezustand')
+          | float(0)
+        }}
+      soc_alt: |-
+        {{
+          states('input_number.wallbox_pv_soc_letzter_wert')
+          | float(0)
+        }}
+      letzter_zeitpunkt: |-
+        {% if has_value('input_datetime.wallbox_pv_soc_letzter_zeitpunkt') %}
+          {{
+            as_timestamp(
+              states('input_datetime.wallbox_pv_soc_letzter_zeitpunkt')
+            )
+          }}
+        {% else %}
+          0
+        {% endif %}
+      jetzt: '{{ as_timestamp(now()) }}'
+      intervall_minuten: |-
+        {% if letzter_zeitpunkt | float(0) > 0 %}
+          {{
+            (
+              (
+                jetzt | float(0)
+                -
+                letzter_zeitpunkt | float(0)
+              )
+              / 60
+            )
+            | round(2)
+          }}
+        {% else %}
+          0
+        {% endif %}
+      zeit_erlaubt: |-
+        {{
+          now().hour >= 7
+          and
+          now().hour < 17
+        }}
+      soc_delta: |-
+        {{
+          (
+            soc_aktuell | float(0)
+            -
+            soc_alt | float(0)
+          )
+          | round(2)
+        }}
+      batterie_delta_wh: |-
+        {{
+          (
+            soc_delta | float(0)
+            * 98
+          )
+          | round(1)
+        }}
+      batterie_mittel_w: |-
+        {% if intervall_minuten | float(0) > 0 %}
+          {{
+            (
+              batterie_delta_wh | float(0)
+              * 60
+              /
+              intervall_minuten | float(0)
+            )
+            | round(0)
+          }}
+        {% else %}
+          0
+        {% endif %}
+      stromkorrektur: |-
+        {% if (soc_delta | float(0) | abs) <= 0.2 %}
+          0
+        {% else %}
+          {{
+            (
+              batterie_mittel_w | float(0)
+              / 230
+            )
+            | round(0)
+            | int
+          }}
+        {% endif %}
+      aktueller_sollstrom: |-
+        {{
+          states('input_number.wallbox_ladestrom_vorgabe')
+          | int(6)
+        }}
+      neuer_sollstrom: |-
+        {% set neu =
+          aktueller_sollstrom | int
+          +
+          stromkorrektur | int
+        %}
+        {% if neu < 6 %}
+          6
+        {% elif neu > 16 %}
+          16
+        {% else %}
+          {{ neu }}
+        {% endif %}
+      freigabe: |-
+        {{
+          is_state(
+            'input_boolean.wallbox_ladefreigabe',
+            'on'
+          )
+        }}
+      fahrzeugstatus: |-
+        {{
+          states('sensor.go_echarger_status_text')
+        }}
+      fahrzeug_verbunden: |-
+        {{
+          fahrzeugstatus in [
+            'Ladung beendet / Fahrzeug verbunden',
+            'Fahrzeug lädt',
+            'Warte auf Fahrzeug / Ladung beendet'
+          ]
+        }}
+      intervall_ok: |-
+        {{
+          intervall_minuten | float(0) >= 8
+          and
+          intervall_minuten | float(0) <= 12
+        }}
+      diagnose: >-
+        SoC-alt={{ soc_alt | round(2) }} % | SoC-neu={{ soc_aktuell | round(2)
+        }} % | Delta={{ soc_delta | round(2) }} %-Punkte | Intervall={{
+        intervall_minuten | round(2) }} min | Energie={{ batterie_delta_wh |
+        round(1) }} Wh | Batterie-Mittel={{ batterie_mittel_w | round(0) }} W |
+        Korrektur={{ stromkorrektur | int }} A | Soll-alt={{ aktueller_sollstrom
+        | int }} A | Soll-neu={{ neuer_sollstrom | int }} A | Freigabe={{ 'EIN'
+        if freigabe else 'AUS' }} | Fahrzeug={{ fahrzeugstatus }}
+  - if:
+      - condition: template
+        value_template: '{{ not zeit_erlaubt }}'
+    then:
+      - if:
+          - condition: template
+            value_template: |-
+              {{
+                aktueller_sollstrom | int != 6
+                or
+                freigabe
+              }}
+        then:
+          - action: logbook.log
+            data:
+              name: Wallbox PV-Regelung
+              message: >-
+                ZEITFENSTER AUS | Zeit={{ now().strftime('%H:%M') }} | SoC={{
+                soc_aktuell | round(1) }} % | Soll={{ aktueller_sollstrom | int
+                }} A -> 6 A | Freigabe={{
+                  'EIN -> AUS'
+                  if freigabe
+                  else 'bleibt AUS'
+                }}
+              entity_id: input_boolean.pv_uberschussladen
+              domain: automation
+      - if:
+          - condition: template
+            value_template: '{{ aktueller_sollstrom | int != 6 }}'
+        then:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.wallbox_ladestrom_vorgabe
+            data:
+              value: 6
+      - if:
+          - condition: template
+            value_template: '{{ freigabe }}'
+        then:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.wallbox_ladefreigabe
+      - stop: >-
+          Ausserhalb des PV-Ladezeitfensters 07:00 bis 17:00. Wallbox auf 6 A
+          und Ladefreigabe AUS.
+  - if:
+      - condition: trigger
+        id: fahrzeugstatus
+    then:
+      - action: logbook.log
+        data:
+          name: Wallbox PV-Regelung
+          message: >-
+            FAHRZEUGSTATUS | Alt={{
+              trigger.from_state.state
+              if trigger.from_state is not none
+              else 'unbekannt'
+            }} | Neu={{
+              trigger.to_state.state
+              if trigger.to_state is not none
+              else 'unbekannt'
+            }} | SoC={{ soc_aktuell | round(1) }} % | Soll={{
+            aktueller_sollstrom | int }} A | Freigabe={{ 'EIN' if freigabe else
+            'AUS' }}
+          entity_id: input_boolean.pv_uberschussladen
+          domain: automation
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: '{{ not soc_gueltig }}'
+        sequence:
+          - action: logbook.log
+            data:
+              name: Wallbox PV-Regelung
+              message: >-
+                KEINE REGELUNG | BYD-SoC nicht verfuegbar | Strom und
+                Ladefreigabe bleiben unveraendert
+              entity_id: input_boolean.pv_uberschussladen
+              domain: automation
+          - stop: Kein gueltiger BYD-SoC. Keine Aenderung.
+      - conditions:
+          - condition: template
+            value_template: '{{ soc_aktuell | float(0) < 60 }}'
+        sequence:
+          - if:
+              - condition: template
+                value_template: |-
+                  {{
+                    aktueller_sollstrom | int != 6
+                    or
+                    freigabe
+                  }}
+            then:
+              - action: logbook.log
+                data:
+                  name: Wallbox PV-Regelung
+                  message: >-
+                    STOP-SOC | SoC={{ soc_aktuell | round(1) }} % | Grenze=<60 %
+                    | Soll={{ aktueller_sollstrom | int }} A -> 6 A |
+                    Freigabe={{
+                      'EIN -> AUS'
+                      if freigabe
+                      else 'bleibt AUS'
+                    }}
+                  entity_id: input_boolean.pv_uberschussladen
+                  domain: automation
+              - if:
+                  - condition: template
+                    value_template: '{{ aktueller_sollstrom | int != 6 }}'
+                then:
+                  - action: input_number.set_value
+                    target:
+                      entity_id: input_number.wallbox_ladestrom_vorgabe
+                    data:
+                      value: 6
+              - if:
+                  - condition: template
+                    value_template: '{{ freigabe }}'
+                then:
+                  - action: input_boolean.turn_off
+                    target:
+                      entity_id: input_boolean.wallbox_ladefreigabe
+          - stop: BYD-SoC unter 60 Prozent. Wallbox bleibt abgeschaltet.
+      - conditions:
+          - condition: trigger
+            id: initialisieren
+        sequence:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.wallbox_pv_soc_letzter_wert
+            data:
+              value: '{{ soc_aktuell | float(0) }}'
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: input_datetime.wallbox_pv_soc_letzter_zeitpunkt
+            data:
+              timestamp: '{{ as_timestamp(now()) }}'
+          - action: logbook.log
+            data:
+              name: Wallbox PV-Regelung
+              message: >-
+                INITIALISIERT | SoC={{ soc_aktuell | round(1) }} % | Neue
+                Vergleichsbasis gespeichert
+              entity_id: input_boolean.pv_uberschussladen
+              domain: automation
+          - stop: SoC-Vergleichsbasis initialisiert.
+      - conditions:
+          - condition: trigger
+            id: aktiviert
+        sequence:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.wallbox_pv_soc_letzter_wert
+            data:
+              value: '{{ soc_aktuell | float(0) }}'
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: input_datetime.wallbox_pv_soc_letzter_zeitpunkt
+            data:
+              timestamp: '{{ as_timestamp(now()) }}'
+          - if:
+              - condition: template
+                value_template: |-
+                  {{
+                    soc_aktuell | float(0) > 80
+                    and
+                    fahrzeug_verbunden
+                    and
+                    not freigabe
+                  }}
+            then:
+              - variables:
+                  startstrom: |-
+                    {% if soc_aktuell | float(0) > 98 %}
+                      16
+                    {% else %}
+                      6
+                    {% endif %}
+              - if:
+                  - condition: template
+                    value_template: |-
+                      {{
+                        aktueller_sollstrom | int
+                        !=
+                        startstrom | int
+                      }}
+                then:
+                  - action: input_number.set_value
+                    target:
+                      entity_id: input_number.wallbox_ladestrom_vorgabe
+                    data:
+                      value: '{{ startstrom | int }}'
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.wallbox_ladefreigabe
+              - action: logbook.log
+                data:
+                  name: Wallbox PV-Regelung
+                  message: >-
+                    START | SoC={{ soc_aktuell | round(1) }} % | Soll={{
+                    startstrom | int }} A | Freigabe=AUS -> EIN
+                  entity_id: input_boolean.pv_uberschussladen
+                  domain: automation
+          - stop: PV-Regelung aktiviert. Vergleichsbasis gespeichert.
+      - conditions:
+          - condition: trigger
+            id: fahrzeugstatus
+        sequence:
+          - stop: >-
+              Fahrzeugstatus protokolliert. Keine Aenderung von Strom oder
+              Ladefreigabe.
+      - conditions:
+          - condition: template
+            value_template: '{{ not intervall_ok }}'
+        sequence:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.wallbox_pv_soc_letzter_wert
+            data:
+              value: '{{ soc_aktuell | float(0) }}'
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: input_datetime.wallbox_pv_soc_letzter_zeitpunkt
+            data:
+              timestamp: '{{ as_timestamp(now()) }}'
+          - action: logbook.log
+            data:
+              name: Wallbox PV-Regelung
+              message: >-
+                NEUE BASIS | Kein gueltiges 10-Minuten-Intervall | {{ diagnose
+                }}
+              entity_id: input_boolean.pv_uberschussladen
+              domain: automation
+          - stop: Vergleichsintervall ungeeignet. Neue SoC-Basis gespeichert.
+      - conditions:
+          - condition: trigger
+            id: regelung
+          - condition: template
+            value_template: '{{ not freigabe }}'
+        sequence:
+          - if:
+              - condition: template
+                value_template: |-
+                  {{
+                    soc_aktuell | float(0) > 80
+                    and
+                    fahrzeug_verbunden
+                  }}
+            then:
+              - variables:
+                  startstrom: |-
+                    {% if soc_aktuell | float(0) > 98 %}
+                      16
+                    {% else %}
+                      6
+                    {% endif %}
+              - if:
+                  - condition: template
+                    value_template: |-
+                      {{
+                        aktueller_sollstrom | int
+                        !=
+                        startstrom | int
+                      }}
+                then:
+                  - action: input_number.set_value
+                    target:
+                      entity_id: input_number.wallbox_ladestrom_vorgabe
+                    data:
+                      value: '{{ startstrom | int }}'
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.wallbox_ladefreigabe
+              - action: logbook.log
+                data:
+                  name: Wallbox PV-Regelung
+                  message: >-
+                    START | SoC={{ soc_aktuell | round(1) }} % | Soll={{
+                    startstrom | int }} A | Freigabe=AUS -> EIN
+                  entity_id: input_boolean.pv_uberschussladen
+                  domain: automation
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.wallbox_pv_soc_letzter_wert
+            data:
+              value: '{{ soc_aktuell | float(0) }}'
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: input_datetime.wallbox_pv_soc_letzter_zeitpunkt
+            data:
+              timestamp: '{{ as_timestamp(now()) }}'
+          - stop: >-
+              Wallbox derzeit nicht freigegeben. Einschalten nur bei SoC ueber
+              80 Prozent.
+      - conditions:
+          - condition: trigger
+            id: regelung
+          - condition: template
+            value_template: '{{ freigabe }}'
+          - condition: template
+            value_template: '{{ not fahrzeug_verbunden }}'
+        sequence:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.wallbox_pv_soc_letzter_wert
+            data:
+              value: '{{ soc_aktuell | float(0) }}'
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: input_datetime.wallbox_pv_soc_letzter_zeitpunkt
+            data:
+              timestamp: '{{ as_timestamp(now()) }}'
+          - stop: Kein Fahrzeug verbunden. Ladefreigabe bleibt unveraendert.
+      - conditions:
+          - condition: trigger
+            id: regelung
+          - condition: template
+            value_template: '{{ freigabe }}'
+          - condition: template
+            value_template: '{{ fahrzeug_verbunden }}'
+          - condition: template
+            value_template: '{{ soc_aktuell | float(0) > 98 }}'
+        sequence:
+          - if:
+              - condition: template
+                value_template: '{{ aktueller_sollstrom | int != 16 }}'
+            then:
+              - action: logbook.log
+                data:
+                  name: Wallbox PV-Regelung
+                  message: >-
+                    SOC-UEBER-98 | SoC={{ soc_aktuell | round(1) }} % | Soll={{
+                    aktueller_sollstrom | int }} A -> 16 A | Naechstes
+                    10-Minuten-Intervall mit 16 A
+                  entity_id: input_boolean.pv_uberschussladen
+                  domain: automation
+              - action: input_number.set_value
+                target:
+                  entity_id: input_number.wallbox_ladestrom_vorgabe
+                data:
+                  value: 16
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.wallbox_pv_soc_letzter_wert
+            data:
+              value: '{{ soc_aktuell | float(0) }}'
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: input_datetime.wallbox_pv_soc_letzter_zeitpunkt
+            data:
+              timestamp: '{{ as_timestamp(now()) }}'
+          - stop: BYD-SoC ueber 98 Prozent. Wallbox auf 16 A gesetzt.
+      - conditions:
+          - condition: trigger
+            id: regelung
+          - condition: template
+            value_template: '{{ freigabe }}'
+          - condition: template
+            value_template: '{{ fahrzeug_verbunden }}'
+          - condition: template
+            value_template: '{{ soc_aktuell | float(0) <= 98 }}'
+        sequence:
+          - if:
+              - condition: template
+                value_template: |-
+                  {{
+                    neuer_sollstrom | int
+                    !=
+                    aktueller_sollstrom | int
+                  }}
+            then:
+              - action: logbook.log
+                data:
+                  name: Wallbox PV-Regelung
+                  message: SOC-REGELUNG | {{ diagnose }}
+                  entity_id: input_boolean.pv_uberschussladen
+                  domain: automation
+              - action: input_number.set_value
+                target:
+                  entity_id: input_number.wallbox_ladestrom_vorgabe
+                data:
+                  value: '{{ neuer_sollstrom | int }}'
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.wallbox_pv_soc_letzter_wert
+            data:
+              value: '{{ soc_aktuell | float(0) }}'
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: input_datetime.wallbox_pv_soc_letzter_zeitpunkt
+            data:
+              timestamp: '{{ as_timestamp(now()) }}'
+mode: restart
