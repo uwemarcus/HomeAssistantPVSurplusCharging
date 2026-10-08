@@ -1,15 +1,16 @@
-  PV-Laderegelung anhand der SoC-Entwicklung der BYD-Batterie:
-  
+  Anlage:
   PV-Anlage mit 6,5 kWp
   
   BYD Akku HVS mit 10,24 kWh
+  Batteriekapazitaet: 9800 Wh. 1 Prozentpunkt SoC entspricht 98 Wh.
   
   Fronius Symo Gen24 6.0 Plus
   
   Fronius Smart Meter 65A 3 TS und Enwitec Box
 
-  Batteriekapazitaet: 9800 Wh. 1 Prozentpunkt SoC entspricht 98 Wh.
-
+  
+  PV-Laderegelung anhand der SoC-Entwicklung der BYD-Batterie:
+  
   Regeln: 
   Regelung alle 10 Minuten - Einschalten nur bei SoC > 80 %
   
