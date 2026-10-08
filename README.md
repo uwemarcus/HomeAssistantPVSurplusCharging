@@ -7,6 +7,7 @@
   Fronius Symo Gen24 6.0 Plus
   
   Fronius Smart Meter 65A 3 TS und Enwitec Box
+  
 
   
   PV-Laderegelung anhand der SoC-Entwicklung der BYD-Batterie:
