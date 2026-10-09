@@ -33,3 +33,11 @@
   Fahrzeugstatusaenderungen beeinflussen die Ladefreigabe nicht
   
   STOP-SOC wird nur protokolliert, wenn wirklich abgeschaltet wird
+
+Anmerkungen:
+Momentaufnahme Regelungen (egal wie komplex aufgebaut haben bei mir einfach nicht funktioniert. Wenn bei einer kleinen Wolke 500 Watt gefördert werden und dann 10 Sekunden später wieder 5000 Watt und immer wieder große Verbraucher wie Herde oder Warmwasserbereiter kurz laufen funktionieren sie einfach nicht oder regeln sich und die Wallbox und das Auto mit dauernden Änderungen und Ein/Aus Schaltungen zu Tode.
+Eine sehr einfache Regelung (basierend auf diesem Ansatz: Alle 10 Minuten wird einfach nur die SOC Änderung des Hausakkus überprüft mit ein paar wenigen Tageszeit und Hausakkumindestladung Regeln) hat sich bei mir hingegen sehr bewährt.
+
+Ich habe mich halt nur auf meinen begrenzten Anwendungsfall konzentriert:
+6,5 kWp PV mit 10kwh Akku, Fronius WR mit Smartmeter und goecharger mit einphasigem Kabel da das für diese kleine PV genügt.
+Ampere von 6 bis 16 und Laden Ein/Aus werden gesteuert.
