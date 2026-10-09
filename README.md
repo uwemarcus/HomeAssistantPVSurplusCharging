@@ -26,9 +26,7 @@
   
   SoC-Trend innerhalb +/-0,2 Prozentpunkten: keine Stromaenderung
   
-  ausserhalb der Totzone: energetisch berechnete Stromkorrektur
-  
-  Ladestrom 6 bis 16 A
+  Ausserhalb der Totzone: energetisch berechnete Stromkorrektur: Ladestrom 6 bis 16 A
   
   PV-Ueberschussladen AUS: 6 A und Ladefreigabe AUS
   
